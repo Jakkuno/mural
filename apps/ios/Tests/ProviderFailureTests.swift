@@ -46,4 +46,9 @@ final class ProviderFailureTests: XCTestCase {
         XCTAssertNil(ProviderFailure.fromRealtime(code: "slow_down"))
         XCTAssertNil(ProviderFailure.fromRealtime(code: "private_api_key_here"))
     }
+    func testProviderNameIsRenderedInSafeRecoveryAdvice() {
+        let error = ProviderFailure(status: 401, providerName: "Google AI Studio")
+        XCTAssertTrue(error.errorDescription!.contains("Google AI Studio"))
+        XCTAssertFalse(error.errorDescription!.contains("(providerName)"))
+    }
 }

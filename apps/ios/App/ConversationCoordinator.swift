@@ -142,6 +142,7 @@ import MuralCore
         })
     }
     var isRunning: Bool { state == .active || state == .connecting || state == .closing }
+    var aiProvider: AIProvider { api.provider }
     var language: LanguageModule { store.language }
     var assistantPassage: Passage? { session?.passages.last(where: { $0.speaker == .assistant }) }
     var userPassage: Passage? { session?.passages.last(where: { $0.speaker == .user }) }
@@ -167,7 +168,7 @@ import MuralCore
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--preview") { showSettings = true; return }
         #endif
-        guard conversationProvider != .personalKey || CredentialStore.hasKey else { requestAdvancedFocus = true; showSettings = true; return }
+        guard conversationProvider != .personalKey || CredentialStore.hasKey(for: api.provider) else { requestAdvancedFocus = true; showSettings = true; return }
         cancelReset(); meanings.reset()
         error = nil; hostedAccessFailure = nil; notice = nil; lastAssessmentKey = ""
         lastLanguageCheck = ""; pendingCommands = [:]
@@ -296,6 +297,14 @@ import MuralCore
         inputLevel = 0; outputLevel = 0; state = .idle; isMuted = false
         store.selectLanguage(id)
     }
+    func selectAIProvider(_ provider: AIProvider) {
+        guard !isRunning else { return }
+        let providerChanged = api.provider != provider
+        api.setProvider(provider)
+        AIProviderSelection.save(provider)
+        if providerChanged { store.updatePreferences { $0.aiConsentVersion = nil } }
+        error = nil
+    }
     func selectMeaningLanguage(_ value: String) {
         guard MeaningLanguages.all.contains(value) else { return }
         meanings.reset()
@@ -370,6 +379,9 @@ import MuralCore
             endReason: session?.endReason, deadlineReached: api.hostedLease.map { Date() >= $0.deadline } ?? false)
         let boundary = reachedBoundary ? freeBoundaryOwner : nil
         if reachedBoundary { session?.endReason = "Time limit" }
+        if session?.providerID == "gemini-live", let startedAt = session?.startedAt {
+            session?.voiceSeconds = max(0, Date().timeIntervalSince(startedAt))
+        }
         transport.disconnect(); pendingCommands = [:]; working = false
         session?.endedAt = .now; session?.usageFinal = final
         save(); state = .ended
@@ -418,8 +430,10 @@ import MuralCore
         guard let type = event["type"] as? String, session != nil else { return }
         switch type {
         case "mural.session.created":
-            session?.providerID = (event["session"] as? [String: Any])?["id"] as? String
-            session?.voiceSeconds = 15; save()
+            let providerID = (event["session"] as? [String: Any])?["id"] as? String
+            session?.providerID = providerID
+            if providerID != "gemini-live" { session?.voiceSeconds = 15 }
+            save()
         case "session.started":
             guard state == .connecting else { return }
             state = .active; activity = ConversationActivity(now: activityNow); conversationPace = ConversationPace(); inactivitySeconds = nil
@@ -706,7 +720,7 @@ import MuralCore
                 guard self.session?.id == snapshot.id, self.state == .active else { return }
                 self.addUsage(result.usage)
                 if !result.sources.isEmpty {
-                    self.session?.topics.append(TopicBrief(languageID: targetLanguage.id, query: "From our conversation", text: result.text, sources: result.sources))
+                    self.session?.topics.append(TopicBrief(languageID: targetLanguage.id, query: "From our conversation", text: result.text, sources: result.sources, searchEntryPointHTML: result.searchEntryPointHTML))
                 }
                 self.append("commentary", result.text, delegationID: id); self.save()
             } catch is CancellationError { }
@@ -785,7 +799,7 @@ import MuralCore
         let result = try await api.respond(instructions: TeachingPolicy.currentTopic(language: targetLanguage), input: String(query.prefix(500)), search: true, purpose: "topic")
         guard generation == languageGeneration else { throw CancellationError() }
         guard !result.sources.isEmpty else { throw TopicError.unsourced }
-        let brief = TopicBrief(languageID: targetLanguage.id, query: query, text: result.text, sources: result.sources)
+        let brief = TopicBrief(languageID: targetLanguage.id, query: query, text: result.text, sources: result.sources, searchEntryPointHTML: result.searchEntryPointHTML)
         if session == nil || !isRunning {
             var saved = SessionRecord(languageID: targetLanguage.id, title: query); saved.endedAt = .now; saved.topics = [brief]
             saved.inputTokens = result.usage.input; saved.outputTokens = result.usage.output; saved.searchCalls = result.usage.searches; store.save(saved)

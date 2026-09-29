@@ -49,6 +49,7 @@ import chat.mural.MuralViewModel
 import chat.mural.R
 import chat.mural.core.CloudAction
 import chat.mural.core.AccountState
+import chat.mural.core.AI_CONSENT_VERSION
 import chat.mural.AccountViewModel
 import chat.mural.MinutePurchaseViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle

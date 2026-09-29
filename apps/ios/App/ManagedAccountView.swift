@@ -36,7 +36,7 @@ struct ManagedAccountView: View {
                         .accessibilityIdentifier("conversation-settlement-sign-in")
                 }
                 if store.configuration == nil && store.session == nil {
-                    Text("Account sign-in isn’t available in this build. You can continue as a guest.")
+                    Text("Account sign-in isn’t available in this build. You can continue as a guest, or keep practising with your own \(AIProviderSelection.current.title) key in Settings.")
                         .padding(20).frame(maxWidth: .infinity, alignment: .leading)
                         .background(.white.opacity(0.72), in: RoundedRectangle(cornerRadius: 22))
                         .accessibilityIdentifier("managedAccountUnavailable")
