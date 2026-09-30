@@ -98,7 +98,7 @@ class LiveTransport(
         history: JsonArray = JsonArray(emptyList()),
         language: String? = null,
     ) = withContext(AUDIO_DISPATCHER) {
-        if (api is APIClient && api.provider == AIProvider.GOOGLE_AI_STUDIO) {
+        if (api is APIClient && api.liveProvider == AIProvider.GOOGLE_AI_STUDIO) {
             disconnect()
             drainRetiredAttempts()
             if (applicationContext.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {

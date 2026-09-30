@@ -168,7 +168,12 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
     private var lookupJob: Job? = null
     var topicResult by mutableStateOf<TopicBrief?>(null); private set
     var hasKey by mutableStateOf(false); private set
-    var aiProvider by mutableStateOf(AIProviderSelection.read(application)); private set
+    var hasLiveKey by mutableStateOf(false); private set
+    var savedKeyProviders by mutableStateOf(emptySet<AIProvider>()); private set
+    /** Reasoning provider for helper (text) calls. */
+    var aiProvider by mutableStateOf(AIProviderSelection.readHelper(application)); private set
+    /** Voice provider for live conversations, chosen independently. */
+    var liveProvider by mutableStateOf(AIProviderSelection.readVoice(application)); private set
     val language get() = LanguageRegistry.get(archive.preferences.learningLanguageID)!!
     val learner get() = LearningEngine.project(archive.sessions, language.id, archive.preferences.hiddenWords)
     val isRunning get() = state in listOf("connecting", "active", "closing")
@@ -177,7 +182,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private val repository = LearningRepository(application)
     private val credentials = CredentialStore(application)
-    private val api = APIClient(credentials).also { it.provider = aiProvider }
+    private val api = APIClient(credentials).also { it.provider = aiProvider; it.liveProvider = liveProvider }
     private val transport = LiveTransport(application, viewModelScope)
     private val providerStore = ConversationProviderStore(application)
     private val hostedConfiguration = HostedConfiguration.parse(BuildConfig.MANAGED_API_ORIGIN)
@@ -271,9 +276,14 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
         guests?.let { controller -> viewModelScope.launch { controller.state.collect { guestState = it } } }
         viewModelScope.launch {
             try {
-                val loaded = withContext(Dispatchers.IO) { repository.load() to credentials.hasKey(aiProvider) }
+                val loaded = withContext(Dispatchers.IO) {
+                    repository.load() to AIProvider.entries.filter { credentials.hasKey(it) }.toSet()
+                }
                 archive = loaded.first.archive
-                val providers = providerStore.read(if (loaded.second) ConversationProvider.PERSONAL_KEY else ConversationProvider.HOSTED_MINUTES)
+                savedKeyProviders = loaded.second
+                hasKey = savedKeyProviders.contains(aiProvider)
+                hasLiveKey = savedKeyProviders.contains(liveProvider)
+                val providers = providerStore.read(if (savedKeyProviders.isNotEmpty()) ConversationProvider.PERSONAL_KEY else ConversationProvider.HOSTED_MINUTES)
                 hostedSessionIDs = providers.hostedIDs
                 pendingHostedOwnerID = providers.pendingOwnerID
                 accountChangeBlocked = providers.pendingOwnerID != null
@@ -282,7 +292,6 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
                     onFailure = { presentError(getApplication<Application>().getString(R.string.error_guest_secure_storage_unavailable)) })
                 conversationProvider = providers.selection
                 finalAssessmentTickets = ConversationProviderPolicy.recoveryTickets(loaded.first.finalAssessments, hostedSessionIDs)
-                hasKey = loaded.second
                 storageReady = true
                 recoverFinalAssessments()
                 refreshHostedReadiness()
@@ -564,7 +573,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
             return hostedBindings.respond(localID, purpose, logicalID, instructions, input, schema, search, onText)
         }
         if (localID == null && conversationProvider == ConversationProvider.HOSTED_MINUTES) throw HostedFailure.Unavailable
-        return if (onText != null && purpose == HelperPurpose.MEANING && aiProvider == AIProvider.OPENAI) api.streamMeaning(instructions, input, onText)
+        return if (onText != null && purpose == HelperPurpose.MEANING && (aiProvider == AIProvider.OPENAI || aiProvider == AIProvider.NOUS_PORTAL)) api.streamMeaning(instructions, input, onText)
         else api.respond(instructions, input, schema, search, purpose)
     }
     private fun helperContext(snapshot: SessionRecord, passage: Passage? = null): String =
@@ -672,22 +681,36 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
         lookupJob?.cancel()
         lookupJob = null; lookupResult = null; lookupError = null; lookupLoading = false
     }
-    fun saveKey(key: String, useAfterSave: Boolean = true) {
+    fun saveKey(provider: AIProvider, key: String, useAfterSave: Boolean = true) {
         if (isRunning) return
-        try { credentials.save(key, aiProvider); hasKey = credentials.hasKey(aiProvider); providerIssue = null; if (useAfterSave) selectConversationProvider(ConversationProvider.PERSONAL_KEY); recoverFinalAssessments(); notice = getApplication<Application>().getString(R.string.notice_key_saved) }
+        try { credentials.save(key, provider); refreshKeyState(); providerIssue = null; if (useAfterSave) selectConversationProvider(ConversationProvider.PERSONAL_KEY); recoverFinalAssessments(); notice = getApplication<Application>().getString(R.string.notice_key_saved) }
         catch (e: Exception) { presentError(e, R.string.error_key_save_failed) }
     }
-    fun deleteKey() {
+    fun deleteKey(provider: AIProvider) {
         if (isRunning) return
-        try { credentials.delete(aiProvider); hasKey = false; providerIssue = null }
+        try { credentials.delete(provider); providerIssue = null }
         catch (e: Exception) { presentError(e, R.string.error_key_delete_failed) }
-        finally { hasKey = credentials.hasKey(aiProvider) }
+        finally { refreshKeyState() }
     }
-    fun selectAIProvider(provider: AIProvider) {
+    private fun refreshKeyState() {
+        savedKeyProviders = AIProvider.entries.filter { credentials.hasKey(it) }.toSet()
+        hasKey = savedKeyProviders.contains(aiProvider)
+        hasLiveKey = savedKeyProviders.contains(liveProvider)
+    }
+    fun selectVoiceProvider(provider: AIProvider) {
+        if (isRunning || liveProvider == provider || !provider.supportsVoice) return
+        liveProvider = provider
+        api.liveProvider = provider
+        AIProviderSelection.saveVoice(getApplication(), provider)
+        hasLiveKey = credentials.hasKey(provider)
+        if (storageReady) updatePreferences(archive.preferences.copy(aiConsentVersion = null))
+        dismissError()
+    }
+    fun selectHelperProvider(provider: AIProvider) {
         if (isRunning || aiProvider == provider) return
         aiProvider = provider
         api.provider = provider
-        AIProviderSelection.save(getApplication(), provider)
+        AIProviderSelection.saveHelper(getApplication(), provider)
         hasKey = credentials.hasKey(provider)
         if (storageReady) updatePreferences(archive.preferences.copy(aiConsentVersion = null))
         dismissError()
@@ -770,7 +793,7 @@ class MuralViewModel(application: Application) : AndroidViewModel(application) {
             presentError(getApplication<Application>().getString(R.string.hosted_checking_previous))
             reconcileHostedSessions(); return
         }
-        if (!ConversationProviderPolicy.canStart(choice, hasKey, hostedReadiness)) {
+        if (!ConversationProviderPolicy.canStart(choice, hasKey && hasLiveKey, hostedReadiness)) {
             if (choice == ConversationProvider.HOSTED_MINUTES) {
                 showMinuteAccess = true; refreshHostedReadiness()
             } else presentError(getApplication<Application>().getString(R.string.error_missing_key), true)

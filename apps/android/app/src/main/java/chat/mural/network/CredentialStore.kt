@@ -36,6 +36,7 @@ class CredentialStore internal constructor(
         val valid = when (provider) {
             AIProvider.OPENAI -> value.startsWith("sk-") && value.length >= 20
             AIProvider.GOOGLE_AI_STUDIO -> value.length >= 20
+            AIProvider.NOUS_PORTAL -> value.length >= 20
         }
         if (!valid || value.any(Char::isWhitespace)) {
             throw CredentialException.Invalid
@@ -131,11 +132,13 @@ class CredentialStore internal constructor(
     private fun isValidStoredKey(value: String, provider: AIProvider): Boolean = when (provider) {
         AIProvider.OPENAI -> value.startsWith("sk-") && value.length >= 20
         AIProvider.GOOGLE_AI_STUDIO -> value.length >= 20
+        AIProvider.NOUS_PORTAL -> value.length >= 20
     } && value.none(Char::isWhitespace)
 
     private fun suffix(provider: AIProvider): String = when (provider) {
         AIProvider.OPENAI -> ""
         AIProvider.GOOGLE_AI_STUDIO -> "_google"
+        AIProvider.NOUS_PORTAL -> "_nous"
     }
 
     private fun ciphertextKey(provider: AIProvider) = CIPHERTEXT + suffix(provider)

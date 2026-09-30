@@ -44,16 +44,24 @@ class APIClient private constructor(
     private val client: OkHttpClient = defaultClient(),
     private val baseUrl: HttpUrl = API_BASE_URL,
     private val googleBaseUrl: HttpUrl = GOOGLE_API_BASE_URL,
+    private val nousBaseUrl: HttpUrl = NOUS_API_BASE_URL,
 ) : TeachingClient, LiveSessionProvider {
     constructor(credentials: CredentialStore) : this({ provider -> credentials.read(provider) })
 
+    /** Reasoning provider for helper (text) calls. */
     var provider: AIProvider = AIProvider.OPENAI
+
+    /** Voice provider for live sessions; chosen independently from [provider]. */
+    var liveProvider: AIProvider = AIProvider.OPENAI
 
     internal constructor(key: String?, client: OkHttpClient, baseUrl: HttpUrl) :
         this({ key }, client, baseUrl)
 
     internal constructor(key: String?, client: OkHttpClient, baseUrl: HttpUrl, googleBaseUrl: HttpUrl) :
         this({ key }, client, baseUrl, googleBaseUrl)
+
+    internal constructor(key: String?, client: OkHttpClient, baseUrl: HttpUrl, googleBaseUrl: HttpUrl, nousBaseUrl: HttpUrl) :
+        this({ key }, client, baseUrl, googleBaseUrl, nousBaseUrl)
 
     override suspend fun createLiveSession(request: LiveSessionRequest): LiveSessionConnection {
         val result = post("live/sessions", buildJsonObject {
@@ -89,6 +97,9 @@ class APIClient private constructor(
     ): APIResult {
         if (provider == AIProvider.GOOGLE_AI_STUDIO) {
             return geminiRespond(instructions, input, schema, search)
+        }
+        if (provider == AIProvider.NOUS_PORTAL) {
+            return nousRespond(instructions, input, schema)
         }
         val body = responseBody(instructions, input, schema, search)
 
@@ -127,6 +138,7 @@ class APIClient private constructor(
         }
     }
     override suspend fun streamMeaning(instructions: String, input: String, onText: (String) -> Unit): APIResult {
+        if (provider == AIProvider.NOUS_PORTAL) return nousStreamMeaning(instructions, input, onText)
         val key = readCredential(AIProvider.OPENAI) ?: throw APIException.MissingKey
         val body = buildJsonObject {
             responseBody(instructions, input, null, false).forEach { (key, value) -> put(key, value) }
@@ -212,6 +224,104 @@ class APIClient private constructor(
                 searches = if (search) searchQueries.takeIf { it > 0 } ?: if (sources.isNotEmpty()) 1 else 0 else 0,
             ),
         )
+    }
+
+    /**
+     * Nous Portal serves OpenAI-compatible chat completions. It has no grounded web search,
+     * so topic requests return text without sources.
+     */
+    private fun nousBody(instructions: String, input: String, schema: JsonObject?): JsonObject = buildJsonObject {
+        put("model", AIProvider.NOUS_PORTAL.helperModel)
+        put("messages", buildJsonArray {
+            add(buildJsonObject { put("role", "system"); put("content", instructions) })
+            add(buildJsonObject { put("role", "user"); put("content", input) })
+        })
+        put("max_tokens", if (schema == null) 1_400 else 2_200)
+        put("reasoning_effort", "low")
+        if (schema != null) {
+            put("response_format", buildJsonObject {
+                put("type", "json_schema")
+                put("json_schema", buildJsonObject {
+                    put("name", "mural_result"); put("strict", true); put("schema", schema)
+                })
+            })
+        }
+    }
+
+    private suspend fun nousRespond(instructions: String, input: String, schema: JsonObject?): APIResult {
+        val key = readCredential(AIProvider.NOUS_PORTAL) ?: throw APIException.MissingKey
+        val response = directPost(nousBaseUrl.newBuilder().addPathSegments("chat/completions").build(), key,
+            nousBody(instructions, input, schema), "Nous Portal")
+        return decodeNousResponse(response)
+    }
+
+    private fun decodeNousResponse(response: JsonObject): APIResult {
+        val choice = response["choices"]?.jsonArray?.firstOrNull()?.jsonObject ?: throw APIException.InvalidResponse
+        when (choice["finish_reason"]?.jsonPrimitive?.contentOrNull) {
+            "content_filter" -> throw APIException.Refused
+            null, "stop" -> Unit
+            else -> throw APIException.Incomplete
+        }
+        val text = choice["message"]?.jsonObject?.get("content")?.jsonPrimitive?.contentOrNull.orEmpty()
+        if (text.isEmpty()) throw APIException.Incomplete
+        val usage = response["usage"]?.jsonObject
+        return APIResult(text, emptyList(), APIUsage(
+            input = usage?.get("prompt_tokens")?.jsonPrimitive?.intOrNull ?: 0,
+            output = usage?.get("completion_tokens")?.jsonPrimitive?.intOrNull ?: 0,
+            searches = 0,
+        ))
+    }
+
+    private suspend fun nousStreamMeaning(instructions: String, input: String, onText: (String) -> Unit): APIResult {
+        val key = readCredential(AIProvider.NOUS_PORTAL) ?: throw APIException.MissingKey
+        val body = buildJsonObject {
+            nousBody(instructions, input, null).forEach { (name, value) -> put(name, value) }
+            put("stream", true)
+            put("stream_options", buildJsonObject { put("include_usage", true) })
+        }
+        val request = Request.Builder().url(nousBaseUrl.newBuilder().addPathSegments("chat/completions").build())
+            .header("Authorization", "Bearer $key").header("Accept", "text/event-stream")
+            .post(body.toString().toRequestBody(JSON_MEDIA_TYPE)).build()
+        val callbacks = currentCoroutineContext().minusKey(Job)
+        var text = ""
+        var usage = APIUsage()
+        var finished = false
+        streamingResponse(client, request) { response ->
+            if (!response.isSuccessful) {
+                val code = runCatching { JSON.parseToJsonElement(response.peekBody(16_384).string()).jsonObject["error"]
+                    ?.jsonObject?.get("code")?.jsonPrimitive?.contentOrNull }.getOrNull()
+                throw APIException.Http(response.code, code, response.header("x-request-id"), "Nous Portal")
+            }
+            if (response.header("Content-Type")?.startsWith("text/event-stream", ignoreCase = true) != true) throw APIException.InvalidResponse
+            try {
+                readTextEvents(response) { event ->
+                    (event["usage"] as? JsonObject)?.let { value ->
+                        usage = APIUsage(
+                            input = value["prompt_tokens"]?.jsonPrimitive?.intOrNull ?: 0,
+                            output = value["completion_tokens"]?.jsonPrimitive?.intOrNull ?: 0,
+                        )
+                    }
+                    val choice = (event["choices"] as? JsonArray)?.firstOrNull()?.jsonObject ?: return@readTextEvents null
+                    choice["delta"]?.jsonObject?.get("content")?.jsonPrimitive?.contentOrNull
+                        ?.takeIf { it.isNotEmpty() }?.let { delta ->
+                            text += delta
+                            if (text.toByteArray(Charsets.UTF_8).size > 65_536) throw APIException.InvalidResponse
+                            withContext(callbacks) { onText(text) }
+                        }
+                    when (choice["finish_reason"]?.jsonPrimitive?.contentOrNull) {
+                        "content_filter" -> throw APIException.Refused
+                        null -> Unit
+                        else -> finished = true
+                    }
+                    null
+                }
+            } catch (error: IOException) {
+                // include_usage arrives in a trailing chunk after finish_reason; a finished stream is still a result.
+                if (!finished || text.isEmpty()) throw error
+            }
+        }
+        if (text.isEmpty()) throw APIException.Incomplete
+        return APIResult(text, emptyList(), usage, null)
     }
 
     private fun geminiCompatibleSchema(value: JsonElement): JsonElement = when (value) {
@@ -310,6 +420,12 @@ class APIClient private constructor(
             .scheme("https")
             .host("generativelanguage.googleapis.com")
             .addPathSegment("v1beta")
+            .addPathSegment("")
+            .build()
+        private val NOUS_API_BASE_URL = HttpUrl.Builder()
+            .scheme("https")
+            .host("inference-api.nousresearch.com")
+            .addPathSegment("v1")
             .addPathSegment("")
             .build()
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()

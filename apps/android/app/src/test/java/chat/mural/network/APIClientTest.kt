@@ -89,7 +89,7 @@ class APIClientTest {
         server.enqueue(MockResponse().setBody("""{"candidates":[{"finishReason":"STOP","content":{"parts":[{"text":"สวัสดี"}]},"groundingMetadata":{"webSearchQueries":["thai news","thai culture"],"searchEntryPoint":{"renderedContent":"<a href=\"https://www.google.com/search?q=thai+news\">Search suggestions</a>"},"groundingChunks":[{"web":{"uri":"https://example.com","title":"Example"}}]}}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":4}}"""))
         val result = google.respond("policy", "hello", search = true)
         val request = server.takeRequest(2, TimeUnit.SECONDS)!!
-        assertEquals("/v1/models/gemma-4-31b-it:generateContent", request.path)
+        assertEquals("/v1/models/${AIProvider.GOOGLE_AI_STUDIO.helperModel}:generateContent", request.path)
         assertEquals("AIza-fake-test-only-credential", request.getHeader("x-goog-api-key"))
         assertNull(request.getHeader("Authorization"))
         assertEquals("สวัสดี", result.text)
@@ -146,5 +146,54 @@ class APIClientTest {
         assertEquals(JsonPrimitive("Teaching policy"), body["session"]!!.jsonObject["instructions"])
         assertEquals("provider-live", result.providerSessionID); assertNull(result.lease)
         assertNull(body["language"])
+    }
+    @Test fun nousPortalProviderUsesChatCompletionsOwnKeyAndParsesUsage() = runBlocking {
+        val nous = APIClient("nous-test-key-0123456789", OkHttpClient.Builder().followRedirects(false).build(),
+            server.url("/v1/"), server.url("/v1/"), server.url("/v1/"))
+        nous.provider = AIProvider.NOUS_PORTAL
+        server.enqueue(MockResponse().setBody("""{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"Ciao"}}],"usage":{"prompt_tokens":9,"completion_tokens":4}}"""))
+        val result = nous.respond("policy", "hello")
+        val request = server.takeRequest(2, TimeUnit.SECONDS)!!
+        assertEquals("/v1/chat/completions", request.path)
+        assertEquals("Bearer nous-test-key-0123456789", request.getHeader("Authorization"))
+        val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+        assertEquals("openai/gpt-6-luna", body["model"]!!.jsonPrimitive.content)
+        assertEquals("Ciao", result.text); assertEquals(APIUsage(9, 4, 0), result.usage)
+    }
+    @Test fun nousPortalStrictSchemaAndRefusalStayBounded() = runBlocking {
+        val nous = APIClient("nous-test-key-0123456789", OkHttpClient.Builder().followRedirects(false).build(),
+            server.url("/v1/"), server.url("/v1/"), server.url("/v1/"))
+        nous.provider = AIProvider.NOUS_PORTAL
+        server.enqueue(MockResponse().setBody("""{"choices":[{"finish_reason":"stop","message":{"content":"{\"note\":\"ok\"}"}}]}"""))
+        val schema = buildJsonObject { put("type", "object") }
+        val result = nous.respond("policy", "hello", schema = schema)
+        val body = Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
+        assertEquals("json_schema", body["response_format"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+        assertEquals("{\"note\":\"ok\"}", result.text)
+        server.enqueue(MockResponse().setBody("""{"choices":[{"finish_reason":"content_filter","message":{"content":""}}]}"""))
+        try { nous.respond("p", "q"); fail("refusal accepted") } catch (_: APIClient.APIException.Refused) { }
+    }
+    @Test fun nousStreamingMeaningEmitsProgressiveTextAndKeepsUsage() = runBlocking {
+        val nous = APIClient("nous-test-key-0123456789", OkHttpClient.Builder().followRedirects(false).build(),
+            server.url("/v1/"), server.url("/v1/"), server.url("/v1/"))
+        nous.provider = AIProvider.NOUS_PORTAL
+        val stream = """data: {"choices":[{"delta":{"content":"Ciao"},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{"content":" a te"},"finish_reason":null}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+
+data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2}}
+
+data: [DONE]
+
+"""
+        server.enqueue(MockResponse().setHeader("Content-Type", "text/event-stream").setBody(stream))
+        val seen = mutableListOf<String>()
+        val result = nous.streamMeaning("policy", "hello") { seen += it }
+        assertEquals(listOf("Ciao", "Ciao a te"), seen)
+        assertEquals("Ciao a te", result.text); assertEquals(APIUsage(5, 2, 0), result.usage)
+        val sent = Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
+        assertEquals(JsonPrimitive(true), sent["stream"])
     }
 }
