@@ -11,7 +11,7 @@ enum class AIProvider(
     val dataControlsUrl: String,
 ) {
     OPENAI("OpenAI", "gpt-6-luna", "gpt-live-1", "https://platform.openai.com/api-keys", "https://platform.openai.com/usage", "https://developers.openai.com/api/docs/guides/your-data"),
-    GOOGLE_AI_STUDIO("Google AI Studio", "gemma-4-31b-it", "gemini-3.8-live", "https://aistudio.google.com/app/apikey", "https://aistudio.google.com/app/usage", "https://ai.google.dev/gemini-api/docs/usage-policies"),
+    GOOGLE_AI_STUDIO("Google AI Studio", "gemini-3.5-flash-lite", "gemini-3.8-live", "https://aistudio.google.com/app/apikey", "https://aistudio.google.com/app/usage", "https://ai.google.dev/gemini-api/docs/usage-policies"),
 }
 
 object AIProviderSelection {

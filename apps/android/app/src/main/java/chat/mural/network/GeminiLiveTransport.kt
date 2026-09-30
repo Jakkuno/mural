@@ -95,7 +95,7 @@ class GeminiLiveTransport(
         activeResumptionHandle = resumptionHandle
         synchronized(controlLock) { socketReady = false }
         val url = HttpUrl.Builder()
-            .scheme("wss")
+            .scheme("https")
             .host("generativelanguage.googleapis.com")
             .addPathSegments("ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent")
             .addQueryParameter("key", key)
