@@ -55,6 +55,25 @@ an installation signed by upstream's own keys (uninstall upstream first if prese
   `gemini-3.5-flash-lite`, which answers in under a second.
 - Both fixes verified end-to-end on a lab Android device (connect, live audio, meaning).
 
+## Independent voice/reasoning providers + Nous Portal (`v0.1.0-gemini.3`)
+
+- Settings → Advanced now has **two independent selectors**:
+  - **Voice** — the live-conversation provider: *OpenAI* or *Google AI Studio* (Gemini Live).
+  - **Reasoning** — meanings, subtitles, translations, typed replies and word assessments:
+    *OpenAI*, *Google AI Studio* or *Nous Portal*.
+  Example: Gemini Live for the voice while Nous Portal/Luna handles the text, in the same session.
+- **Nous Portal** text provider: OpenAI-compatible `chat/completions` on
+  `inference-api.nousresearch.com` (model `openai/gpt-6-luna`; SSE streaming for meanings,
+  structured JSON for assessments). Nous is text-only here: no realtime voice API was verified,
+  so the Voice selector keeps offering only OpenAI/Google.
+- **API keys**: per provider (OpenAI / Google AI Studio / Nous Portal), encrypted on device;
+  several can be saved side by side ("_n_ of 3 saved"). Switching the voice or reasoning
+  provider asks for the AI-permission review again, then continues.
+- Upgrades keep the previous single provider choice, which seeds both selectors.
+- Verified end-to-end on a lab device with the **final release APK**: Gemini Live voice session
+  (connect, audio, live transcription), Nous-generated typed reply + meanings, word assessments
+  (strict JSON), and the on-device usage counter ("Recorded voice time").
+
 ## License
 
 MIT, same as upstream (`LICENSE`).
