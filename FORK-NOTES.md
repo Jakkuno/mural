@@ -25,7 +25,7 @@ upstream PR [Chuloo/mural#129](https://github.com/Chuloo/mural/pull/129)
 
 - Settings → Advanced: **AI provider** selector: `OpenAI` or `Google AI Studio`.
 - Key management is per-provider (encrypted on device, entered in-app — never in the build).
-- With Google AI Studio: voice = `gemini-3.8-live`, teacher/helper = `gemma-4-31b-it`.
+- With Google AI Studio: voice = `gemini-3.8-live`, teacher/helper = `gemini-3.5-flash-lite`.
 - Also includes PR #129's Chinese/Thai language support and related fixes/captions work.
 
 ## Build (Android)
@@ -42,6 +42,18 @@ Personal signing note: `apps/android/.signing/debug.keystore` (git-ignored) keep
 signing identity across machines/SDK reinstalls — keep a copy so future APK updates install
 over this one. This APK is a personal build: not signed for Google Play, and it cannot update
 an installation signed by upstream's own keys (uninstall upstream first if present).
+
+## Fixes after the first release (`v0.1.0-gemini.1` -> `v0.1.0-gemini.2`)
+
+- **Android voice connect** (`GeminiLiveTransport.kt`): the OkHttp URL builder used the `wss`
+  scheme, which OkHttp rejects (`IllegalArgumentException: unexpected scheme: wss`) -- OkHttp
+  performs the WebSocket upgrade itself and accepts only `http`/`https` URLs. Fixed by building
+  the URL with `https`: the transport now completes setup, streams audio, and shows live
+  transcription in the app.
+- **Google text helper** (`AIProvider.kt`): `gemma-4-31b-it` stalls for interactive helper calls
+  (meaning/subtitles stay at "We couldn't get the meaning"). The helper now uses
+  `gemini-3.5-flash-lite`, which answers in under a second.
+- Both fixes verified end-to-end on a lab Android device (connect, live audio, meaning).
 
 ## License
 
