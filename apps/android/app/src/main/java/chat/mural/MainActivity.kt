@@ -14,11 +14,13 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -65,6 +67,11 @@ class MainActivity : ComponentActivity() {
             purchases.balanceChanges.collect { account.refresh(); vm.refreshHostedReadiness() }
         }
         setContent {
+            // Keep the display awake while a voice conversation is running: screen timeout
+            // otherwise stops the activity and the session ends ("App moved to background").
+            val keepScreenOn = vm.state == "connecting" || vm.state == "active"
+            val conversationView = LocalView.current
+            LaunchedEffect(keepScreenOn) { conversationView.keepScreenOn = keepScreenOn }
             val accountTransitionBusy by account.transitionBusy.collectAsStateWithLifecycle()
             var microphoneMessage by rememberSaveable { mutableStateOf<String?>(null) }
             var microphonePermanentlyDenied by rememberSaveable { mutableStateOf(false) }

@@ -74,6 +74,23 @@ an installation signed by upstream's own keys (uninstall upstream first if prese
   (connect, audio, live transcription), Nous-generated typed reply + meanings, word assessments
   (strict JSON), and the on-device usage counter ("Recorded voice time").
 
+## Screen timeout no longer ends the conversation (`v0.1.0-gemini.4`)
+
+- **Cause (reproduced on the lab device):** Android's display timeout. While you talk you don't
+  touch the phone, so the display went to sleep; that stops the Activity, and `background()`
+  ends the conversation (`endReason = "App moved to background"`, **no notice shown**) -- the
+  session stopped mid-practice with no visible reason.
+- **Fix (`MainActivity.kt`):** the window keeps the screen on (`keepScreenOn`) while the session
+  is `connecting`/`active` and releases it when the session ends (state change -> normal timeout
+  resumes). A small `LaunchedEffect` at the `setContent` root; no other behavior touched.
+- **Verified on the final APK:** with a 15 s screen timeout forced in the lab, the display stayed
+  awake for the whole session and the conversation continued past the timeout; the session ended
+  only through the app's own logic (silence/time-limit), and afterwards the display slept again
+  normally. Pre-fix baseline captured: `background()` fired ~15 s after the last touch.
+- While investigating: a full 15-minute Gemini Live lab session ran with no mid-session cut
+  (resumption checkpoints arrive; handle-storage/reconnect logic present, not yet stressed by a
+  real disconnect).
+
 ## License
 
 MIT, same as upstream (`LICENSE`).
